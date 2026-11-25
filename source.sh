@@ -3,6 +3,10 @@
 #  Debian 换源一键脚本 (source.sh)
 #  作者: 末晨   https://blog.mochen.one
 #
+#  v2.0.2
+#    - 修正 bash -c / 管道方式运行时的回滚提示（原来会显示成 "bash bash --restore"）
+#    - apt-get update 结束后区分「全部成功 / 部分源失败 / 整体失败」，不再把
+#      第三方源签名过期之类的告警当成成功
 #  v2.0.1
 #    - 写入前逐条校验套件与组件：镜像上没有的（例如未同步的 -backports、
 #      某个组件缺失）会自动剔除并提示，避免 apt update 报 404
@@ -17,7 +21,7 @@
 
 set -u -o pipefail
 
-SCRIPT_VERSION="2.0.1"
+SCRIPT_VERSION="2.0.2"
 
 # ---------------------------------------------------------------------------
 # 颜色
@@ -812,9 +816,56 @@ do_restore() {
     restore_snapshot "$snap"
 
     if [ "$DO_UPDATE" = 1 ] && [ -z "$ROOT" ] && have apt-get; then
-        info "正在更新软件包索引 ..."
-        apt-get update -o Acquire::Retries=3 || warn "apt-get update 有错误，请查看上方输出。"
+        apt_update_report
     fi
+}
+
+# 回滚提示：$0 是真实脚本路径时才给出可复制的命令
+rollback_hint() {
+    local self="$0"
+    case "$self" in
+        ''|-bash|bash|-sh|sh|-dash|dash|*/bash|*/sh|*/dash) self="" ;;
+    esac
+    if [ -n "$self" ] && [ -f "$self" ]; then
+        info "回滚命令：bash $self --restore"
+    else
+        info "回滚方式：用同样的方式重新运行本脚本并加 --restore 参数"
+        [ -n "${SNAP_DIR:-}" ] && info "备份位置：$SNAP_DIR"
+    fi
+    return 0
+}
+
+# 汇总 apt-get update 的结果：区分“全部成功”“部分源失败”“整体失败”
+apt_update_report() {
+    local log="" rc=0 n=0
+    printf '\n'
+    info "正在更新软件包索引 ..."
+    log=$(mktemp 2>/dev/null || true)
+    if [ -n "$log" ]; then
+        apt-get update -o Acquire::Retries=3 2>&1 | tee "$log"
+        rc=${PIPESTATUS[0]}
+    else
+        apt-get update -o Acquire::Retries=3
+        rc=$?
+    fi
+
+    if [ "$rc" -ne 0 ]; then
+        warn "apt-get update 失败（退出码 $rc），请查看上方输出；可用 --restore 回滚。"
+    else
+        if [ -n "$log" ]; then
+            n=$(grep -cE '^(Err:|W: Failed to fetch|E: )' "$log" 2>/dev/null || true)
+        fi
+        if [ "${n:-0}" = "0" ] || [ -z "$n" ]; then
+            ok "软件包索引更新完成。"
+        else
+            warn "apt 报告了 $n 处源错误（见上方 Err/W 行），多数来自第三方源，不是本次换源造成的。"
+            grep -E '^(Err:|W: Failed to fetch)' "$log" 2>/dev/null | head -n 3 | sed 's/^/      /'
+            info "Debian 官方源的索引若已刷新，可继续使用；否则用 --restore 回滚。"
+        fi
+    fi
+
+    [ -n "$log" ] && rm -f "$log"
+    return 0
 }
 
 show_current() {
@@ -940,19 +991,13 @@ run_apply() {
 
     printf '\n'
     ok "Debian ${OS_VER:-?} (${CODENAME}) 已切换到 ${MIRROR_LABEL:-$MIRROR}。"
-    info "回滚命令：bash $0 --restore"
+    rollback_hint
 
     if [ "$DO_UPDATE" = 1 ]; then
         if [ -n "$ROOT" ]; then
             info "（预览根目录，跳过 apt-get update）"
         elif have apt-get; then
-            printf '\n'
-            info "正在更新软件包索引 ..."
-            if apt-get update -o Acquire::Retries=3; then
-                ok "软件包索引更新完成。"
-            else
-                warn "apt-get update 报告了错误，请查看上方输出；需要时可执行 --restore 回滚。"
-            fi
+            apt_update_report
         fi
     fi
 

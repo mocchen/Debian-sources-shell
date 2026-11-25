@@ -2,7 +2,7 @@
 
 > 一条命令把 Debian 的 APT 源切换成国内镜像，自动适配你当前的系统版本，写错了还能一键回滚。
 
-作者：末晨 · <https://blog.mochen.one> · 脚本版本：v2.0.1
+作者：末晨 · <https://blog.mochen.one> · 脚本版本：v2.0.2
 
 仓库：<https://github.com/mocchen/Debian-sources-shell>
 
@@ -239,6 +239,21 @@ Debian 11 及更早已进入归档，官方镜像站不再同步，指向 `deb.d
 
 **Q：Debian 12 的源到底齐不齐？**
 截至 2026-11 实测：`bookworm`、`bookworm-updates`、`bookworm-backports`、`bookworm-security` 四个套件，与 `main` `contrib` `non-free` `non-free-firmware` 四个组件，在官方源以及清华、中科大、阿里云、腾讯云、华为云、南大七个镜像上全部存在，`deb` 与 `deb-src` 索引都有。另外 `bookworm-security` 的 `Release` 文件里组件名写作 `updates/main` 这种带前缀的形式，那是安全归档的目录结构，配置里照旧写 `main contrib non-free non-free-firmware` 即可。
+
+**Q：换源后 `apt update` 里第三方源报 `EXPKEYSIG` / "signatures were invalid"？**
+不是换源造成的，是那个第三方仓库自己的 GPG 密钥过期了。脚本现在会把这种情况标成 `[WARN]` 并列出出错的行，而不是笼统地报 `[ OK ]`。两种处理方式：
+
+```bash
+# 1) 不需要这个仓库，直接删掉
+sudo rm -f /etc/apt/sources.list.d/<仓库文件名>.list
+sudo apt update
+
+# 2) 还要用，就按该仓库官方文档重新导入一次密钥
+#    例如 Caddy：https://caddyserver.com/docs/install
+```
+
+**Q：用 `bash -c "$(curl ...)"` 跑完，回滚命令怎么给？**
+脚本会判断自己的调用方式：如果是本地脚本文件，直接打印 `bash ./source.sh --restore`；如果是 `bash -c` 或管道方式运行（此时没有脚本路径），就改为提示"用同样方式重新运行并加 `--restore`"并给出备份目录，不会再出现 `bash bash --restore` 这种拼错的提示。
 
 **Q：出了事怎么救？**
 `sudo bash source.sh --restore`。备份在 `/var/backups/apt-dsh/`，即使脚本本身丢了也能手动 `cp` 回去。
