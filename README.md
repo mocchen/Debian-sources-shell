@@ -2,7 +2,7 @@
 
 > 一条命令把 Debian 的 APT 源切换成国内镜像，自动适配你当前的系统版本，写错了还能一键回滚。
 
-作者：末晨 · <https://blog.mochen.one> · 脚本版本：v2.0.0
+作者：末晨 · <https://blog.mochen.one> · 脚本版本：v2.0.1
 
 仓库：<https://github.com/mocchen/Debian-sources-shell>
 
@@ -41,7 +41,7 @@
 - **重复源清理**：写入前会把另一种格式里残留的 Debian 条目停用/注释，同时**保留你原有的第三方源**（Docker、Proxmox 等）。
 - **写入前快照**：整个源配置备份到 `/var/backups/apt-dsh/<时间戳>/`，一条 `--restore` 回到从前。
 - **云厂商内网加速**：在腾讯云/阿里云机器上自动探测内网元数据，走 HTTP 内网镜像。
-- **镜像可用性预检**：探测目标镜像上是否真有当前版本的索引，不可用就提示换源，避免写出一份跑不通的配置。
+- **镜像可用性预检**：写入前逐条校验 `InRelease`/`Packages` 索引，镜像上不存在的套件（如未同步的 `-backports`）和组件会被自动剔除并提示，不会留下一份 `apt update` 会报 404 的配置。
 - **非交互模式**：`-y` 一键执行，适合批量部署、初始化脚本、自动化运维。
 
 ---
@@ -207,7 +207,7 @@ sudo bash source.sh --restore 20261125-120102   # 回到指定快照
 
 1. 检查 root 权限，读取 `/etc/os-release` 判断是否为 Debian。
 2. 解析发行代号与版本号，得出：套件列表、组件、安全源套件名、是否为归档版本。
-3. 探测镜像上 `dists/<代号>/Release` 是否存在，确认镜像同步了当前版本。
+3. 逐条校验待写入的套件与组件是否真实存在：缺套件就剔除（基础套件全缺则中止），缺组件就从组件列表里去掉。
 4. 判断当前系统在用 deb822 还是传统格式，生成对应内容（`deb-src` 默认跟随现有配置）。
 5. 快照备份 → 清理另一种格式里的重复 Debian 条目 → 原子写入（临时文件 + rename，权限 644）。
 6. 执行 `apt-get update` 并汇报结果；失败时提示可用 `--restore` 回滚。
@@ -233,6 +233,12 @@ Debian 11 及更早已进入归档，官方镜像站不再同步，指向 `deb.d
 
 **Q：`curl ... | bash` 运行还能弹菜单吗？**
 可以。脚本检测到标准输入不是终端时会自动从 `/dev/tty` 读取输入；纯自动化场景请直接传 `-m` 和 `-y`。
+
+**Q：提示「镜像上没有 `xxx-backports`，已从配置中移除」是怎么回事？**
+说明这个镜像没有同步该套件。脚本选择跳过它，而不是写进配置让 `apt update` 报 `404`。常见于：镜像只同步 stable 而没同步 testing 的套件、自建/内网镜像未全量同步、或该版本刚发布还没生成 `-backports`。想强制写入可加 `--force`。
+
+**Q：Debian 12 的源到底齐不齐？**
+截至 2026-11 实测：`bookworm`、`bookworm-updates`、`bookworm-backports`、`bookworm-security` 四个套件，与 `main` `contrib` `non-free` `non-free-firmware` 四个组件，在官方源以及清华、中科大、阿里云、腾讯云、华为云、南大七个镜像上全部存在，`deb` 与 `deb-src` 索引都有。另外 `bookworm-security` 的 `Release` 文件里组件名写作 `updates/main` 这种带前缀的形式，那是安全归档的目录结构，配置里照旧写 `main contrib non-free non-free-firmware` 即可。
 
 **Q：出了事怎么救？**
 `sudo bash source.sh --restore`。备份在 `/var/backups/apt-dsh/`，即使脚本本身丢了也能手动 `cp` 回去。

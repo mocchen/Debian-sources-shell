@@ -3,6 +3,9 @@
 #  Debian 换源一键脚本 (source.sh)
 #  作者: 末晨   https://blog.mochen.one
 #
+#  v2.0.1
+#    - 写入前逐条校验套件与组件：镜像上没有的（例如未同步的 -backports、
+#      某个组件缺失）会自动剔除并提示，避免 apt update 报 404
 #  v2.0.0
 #    - 按 VERSION_ID / VERSION_CODENAME 自动识别发行版，Debian 9 ~ 14 及以后版本
 #      无需再改脚本；已 EOL 的版本自动切到官方归档源 archive.debian.org
@@ -14,7 +17,7 @@
 
 set -u -o pipefail
 
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.0.1"
 
 # ---------------------------------------------------------------------------
 # 颜色
@@ -399,23 +402,91 @@ set_mirror_uris() {
     return 0
 }
 
-# 校验镜像上确实存在对应发行版的 Release 文件
-check_mirror() {
+# 某个套件在镜像上是否存在（优先 InRelease，回退 Release）
+suite_exists() {
+    local base="$1" suite="$2"
+    http_ok "${base}dists/${suite}/InRelease" && return 0
+    http_ok "${base}dists/${suite}/Release" && return 0
+    return 1
+}
+
+# 某个组件在该套件下是否存在（按当前架构探测索引文件）
+component_exists() {
+    local base="$1" suite="$2" comp="$3" arch="$4"
+    http_ok "${base}dists/${suite}/${comp}/binary-${arch}/Packages.xz" && return 0
+    http_ok "${base}dists/${suite}/${comp}/binary-${arch}/Release" && return 0
+    return 1
+}
+
+# 逐条校验将要写入的套件与组件，把镜像上不存在的剔除掉，避免 apt update 报 404
+verify_mirror() {
     [ "$FORCE" = 1 ] && return 0
     if ! have curl && ! have wget; then
-        info "未检测到 curl/wget，跳过镜像可用性检测。"
+        info "未检测到 curl/wget，跳过套件校验。"
         return 0
     fi
-    info "正在检测 ${MIRROR_LABEL:-$MIRROR} 是否可用 ..."
-    if http_ok "${BASE_URI}dists/${CODENAME}/Release"; then
-        ok "镜像可用。"
+
+    info "正在校验 ${MIRROR_LABEL:-$MIRROR} 上的 ${CODENAME} 套件 ..."
+
+    local s c arch
+    local -a kept=() dropped=()
+
+    for s in "${SUITES[@]}"; do
+        if suite_exists "$BASE_URI" "$s"; then
+            kept+=("$s")
+        else
+            dropped+=("$s")
+        fi
+    done
+
+    for s in "${dropped[@]:-}"; do
+        [ -n "$s" ] || continue
+        warn "镜像上没有 $s，已从配置中移除。"
+    done
+
+    if [ "${#kept[@]}" -eq 0 ]; then
+        warn "镜像 ${BASE_URI} 上找不到 ${CODENAME} 的任何套件索引。"
+        if [ "$ASSUME_YES" = 1 ]; then
+            die "已停止写入：请换一个镜像源，或加 --force 强制写入。"
+        fi
+        confirm "仍然继续写入吗？[y/N] " n || die "已取消。"
         return 0
     fi
-    warn "镜像 $BASE_URI 上找不到 ${CODENAME} 的索引，可能不可用或未同步。"
-    if [ "$ASSUME_YES" = 1 ] && [ "$FORCE" = 0 ]; then
-        die "已停止写入。请换一个镜像，或加 --force 强制写入。"
+    SUITES=("${kept[@]}")
+
+    if [ -n "$SEC_SUITE" ]; then
+        if suite_exists "$SEC_URI" "$SEC_SUITE"; then
+            :
+        else
+            warn "镜像上没有安全源 $SEC_SUITE，已移除。"
+            SEC_SUITE=""
+        fi
     fi
-    confirm "仍然继续写入吗？[y/N] " n || die "已取消。"
+
+    # 组件校验：只在基础套件上做一次，缺哪个就全局去掉哪个
+    arch=$(dpkg --print-architecture 2>/dev/null || true)
+    [ -n "$arch" ] || arch="amd64"
+    kept=(); dropped=()
+    for c in $COMPONENTS; do
+        if component_exists "$BASE_URI" "${SUITES[0]}" "$c" "$arch"; then
+            kept+=("$c")
+        else
+            dropped+=("$c")
+        fi
+    done
+    if [ "${#kept[@]}" -eq 0 ]; then
+        # 组件探测整体失败（镜像可能不支持按架构的索引），保留原样而不是写出一份空配置
+        warn "组件探测失败，保留默认组件：$COMPONENTS"
+    else
+        for c in "${dropped[@]:-}"; do
+            [ -n "$c" ] || continue
+            warn "镜像上没有组件 $c（$arch），已从配置中移除。"
+        done
+        COMPONENTS="${kept[*]}"
+    fi
+
+    ok "套件校验通过：${SUITES[*]}${SEC_SUITE:+ + $SEC_SUITE}；组件：$COMPONENTS"
+    return 0
 }
 
 # ===========================================================================
@@ -824,11 +895,18 @@ choose_mirror() {
 }
 
 run_apply() {
+    [ "$PRINT_ONLY" = 1 ] || require_root
+
     detect_format
     detect_with_src
     detect_keyring
     detect_cloud
     set_mirror_uris
+
+    # 先校验套件/组件，再生成预览，保证看到的就是将要写入的内容
+    if [ "$PRINT_ONLY" = 0 ]; then
+        verify_mirror
+    fi
 
     if [ "$FMT" = "deb822" ]; then
         build_deb822_format
@@ -848,11 +926,6 @@ run_apply() {
         info "预览模式（--print），未修改任何文件。"
         return 0
     fi
-
-    require_root
-    check_mirror
-    detect_keyring
-    if [ "$FMT" = "deb822" ]; then build_deb822_format; else build_list_format; fi
 
     confirm "确认写入以上配置？[Y/n] " y || { say "${RED}已取消，未做任何修改。${NC}"; exit 0; }
 
