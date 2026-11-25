@@ -4,6 +4,8 @@
 
 作者：末晨 · <https://blog.mochen.one> · 脚本版本：v2.0.0
 
+仓库：<https://github.com/mocchen/Debian-sources-shell>
+
 ---
 
 ## 简介
@@ -46,17 +48,37 @@
 
 ## 快速开始
 
-```bash
-# 1. 上传或下载脚本后，赋予执行权限
-chmod +x source.sh
+### 方式一：在线一键运行
 
-# 2. 交互式运行（推荐首次使用）
+不落地文件，直接执行仓库里的最新版：
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/mocchen/Debian-sources-shell/refs/heads/mochen/source.sh)"
+```
+
+这条命令把脚本内容整体交给 `bash` 执行，标准输入仍然是你的终端，所以交互菜单、写入确认、`--restore` 的询问都能正常响应。
+
+需要带参数时（`-s --` 之后的参数会原样传给脚本）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mocchen/Debian-sources-shell/refs/heads/mochen/source.sh | sudo bash -s -- -m tuna -y
+```
+
+管道形式同样能弹菜单——脚本在标准输入不是终端时会自动改从 `/dev/tty` 读取，因此 `curl | bash` 这种常见写法不会失效。
+
+### 方式二：下载后运行（推荐）
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/mocchen/Debian-sources-shell/refs/heads/mochen/source.sh
+less source.sh          # 先看一眼再执行
 sudo bash source.sh
 ```
 
-脚本会先打印识别到的系统信息、镜像和将写入的配置，确认后才落盘。
+本地运行的好处是方便用 `-h` 看帮助、用 `--print` 预览，出问题时也能直接 `--restore` 回滚。
 
-常用的一行命令：
+> 上面的链接指向 `mochen` 分支的最新提交，内容会随仓库更新而变化。对稳定性要求高的场景，建议把分支名换成固定的 commit SHA 或 tag。仓库若改为私有，raw 链接需要携带 token 才能访问。
+
+### 常用一行命令
 
 ```bash
 sudo bash source.sh -m tuna -y            # 切换清华源并更新索引
